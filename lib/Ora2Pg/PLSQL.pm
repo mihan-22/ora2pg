@@ -31,7 +31,7 @@ use POSIX qw(locale_h);
 setlocale(LC_NUMERIC,"C");
 
 
-$VERSION = '24.0';
+$VERSION = '24.1';
 
 #----------------------------------------------------
 # Cost scores used when converting PLSQL to PLPGSQL
@@ -819,9 +819,14 @@ sub plsql_to_plpgsql
 
 	# There's no such things in PostgreSQL
 	$str =~ s/PRAGMA RESTRICT_REFERENCES[^;]+;//igs;
-        $str =~ s/PRAGMA SERIALLY_REUSABLE[^;]*;//igs;
-        $str =~ s/PRAGMA INLINE[^;]+;//igs;
+	$str =~ s/PRAGMA SERIALLY_REUSABLE[^;]*;//igs;
+	$str =~ s/PRAGMA INLINE[^;]+;//igs;
 	
+	# There are no autonomous transactions in standard postgres (as of version 15)
+	my $unsupported = '';
+	$unsupported = "-- Unsupported, consider using dblink to emulate oracle behavior or see AUTONOMOUS_TRANSACTION in ora2pg.conf" if (!$self->{autonomous_transaction});
+	$str =~ s/[ ]+PRAGMA\s+AUTONOMOUS_TRANSACTION;/$unsupported\n-- $&/igs;
+
 	# Remove the extra TRUNCATE clauses not available in PostgreSQL
 	$str =~ s/TRUNCATE\s+TABLE\s+(.*?)\s+(REUSE|DROP)\s+STORAGE/TRUNCATE TABLE $1/igs;
 	$str =~ s/TRUNCATE\s+TABLE\s+(.*?)\s+(PRESERVE|PURGE)\s+MATERIALIZED\s+VIEW\s+LOG/TRUNCATE TABLE $1/igs;
@@ -1216,23 +1221,25 @@ sub plsql_to_plpgsql
 	$str =~ s/\%OUTERJOIN\d+\%/\(\+\)/igs;
 
 	# Rewrite some SQL script setting from Oracle
-	$str =~ s/\bset\s+timing\s+(on|off)/\\timing $1/igs;
-	$str =~ s/\b(set\s+(?:array|arraysize)\s+\d+)/-- $1/igs;
-	$str =~ s/\bset\s+(?:auto|autocommit)\s+(on|off)/\\set AUTOCOMMIT $1/igs;
-	$str =~ s/\bset\s+echo\s+on/\\set ECHO queries/igs;
-	$str =~ s/\bset\s+echo\s+off/\\set ECHO none/igs;
-	$str =~ s/\bset\s+(?:heading|head)\s+(on|off)/\\pset tuples_only $1/igs;
-	$str =~ s/\bset\s+(?:trim|trimout)\s+on/\\pset format unaligned/igs;
-	$str =~ s/\bset\s+(?:trim|trimout)\s+off/\\pset format aligned/igs;
-	$str =~ s/\bset\s+colsep\s+([^\s]+)/\\pset fieldsep $1/igs;
-	$str =~ s/\bspool\s+off/\\o/igs;
-	$str =~ s/\bspool\s+([^\&']+[^\s]+)/\\o $1/igs;
-	$str =~ s/\bttitle\s+/\\pset title /igs;
-	$str =~ s/\bprompt\s+/\\qecho /igs;
-	$str =~ s/\b(set\s+(?:linesize|pagesize|feedback|verify)\s+)/--$1/igs;
-	$str =~ s/\b(disconnect)\b/--$1/igs;
-	$str =~ s/\b(connect\s+)/--$1/igs;
-	$str =~ s/\b(quit)\b/\\$1/igs;
+	$str =~ s/^\s*set\s+timing\s+(on|off)/\\timing $1/igs;
+	$str =~ s/^\s*(set\s+(?:array|arraysize)\s+\d+)/-- $1/igs;
+	$str =~ s/^\s*set\s+(?:auto|autocommit)\s+(on|off)/\\set AUTOCOMMIT $1/igs;
+	$str =~ s/^\s*set\s+echo\s+on/\\set ECHO queries/igs;
+	$str =~ s/^\s*set\s+echo\s+off/\\set ECHO none/igs;
+	$str =~ s/^\s*set\s+(?:heading|head)\s+(on|off)/\\pset tuples_only $1/igs;
+	$str =~ s/^\s*set\s+(?:trim|trimout)\s+on/\\pset format unaligned/igs;
+	$str =~ s/^\s*set\s+(?:trim|trimout)\s+off/\\pset format aligned/igs;
+	$str =~ s/^\s*set\s+colsep\s+([^\s]+)/\\pset fieldsep $1/igs;
+	$str =~ s/^\s*spool\s+off/\\o/igs;
+	$str =~ s/^\s*spool\s+([^\&']+[^\s]+)/\\o $1/igs;
+	$str =~ s/^\s*ttitle\s+/\\pset title /igs;
+	$str =~ s/^\s*prompt\s+/\\qecho /igs;
+	$str =~ s/^\s*set\s+feedback\s+off/\\set QUIET on;/igs;
+	$str =~ s/^\s*set\s+pagesize\s+0/\\pset pager off/igs;
+	$str =~ s/^\s*(set\s+(?:linesize|pagesize|feedback|verify)\s+)/--$1/igs;
+	$str =~ s/^\s*(disconnect)\b/--$1/igs;
+	$str =~ s/^\s*(connect\s+)/--$1/igs;
+	$str =~ s/^\s*(quit)\b/\\$1/igs;
 
 	return $str;
 }
@@ -2356,6 +2363,9 @@ sub replace_sql_type
 	$str =~ s/\bMEDIUMINT\s+UNSIGNED\b/integer/igs;
 	$str =~ s/\bBIGINT\s+UNSIGNED\b/numeric/igs;
 	$str =~ s/\bINT\s+UNSIGNED\b/bigint/igs;
+
+	# Replace SYS_REFCURSOR as Pg REFCURSOR
+	$str =~ s/\bSYS_REFCURSOR\b/REFCURSOR/isg;
 
 	# Remove precision for RAW|BLOB as type modifier is not allowed for type "bytea"
 	$str =~ s/\b(RAW|BLOB)\s*\(\s*\d+\s*\)/$1/igs;
